@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Búsqueda de Empleados - UNS</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>🏢 UNS Shain Daicho Manager</h1>
+    </div>
+    <div class="nav-links">
+      <a href="/">Dashboard</a>
+      <a href="/search" class="active">Búsqueda</a>
+      <a href="/visas">Alertas Visa</a>
+      <a href="/salaries">Salarios</a>
+      <a href="/reports">Reportes</a>
+      <a href="/api/docs" target="_blank">API Docs</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <section class="search-section">
+      <h2>👤 Búsqueda de Empleados</h2>
+      <div class="search-form">
+        <input type="text" id="searchInput" placeholder="Buscar por nombre..." class="search-input">
+        <label class="checkbox-label">
+          <input type="checkbox" id="activeOnly" checked> Solo activos
+        </label>
+        <button onclick="searchEmployees()" class="btn btn-primary">Buscar</button>
+      </div>
+    </section>
+
+    <section id="searchResults" class="results-section">
+      <p class="placeholder-text">Ingrese un nombre para buscar empleados</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>&copy; {{currentYear}} Universal Kikaku (UNS) - Shain Daicho Manager v2.0.0</p>
+  </footer>
+
+  <script src="/js/app.js"></script>
+  <script>
+    document.getElementById('searchInput').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') searchEmployees();
+    });
+  </script>
+</body>
+</html>

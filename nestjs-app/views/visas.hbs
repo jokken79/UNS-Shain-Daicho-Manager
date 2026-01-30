@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alertas de Visa - UNS</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>🏢 UNS Shain Daicho Manager</h1>
+    </div>
+    <div class="nav-links">
+      <a href="/">Dashboard</a>
+      <a href="/search">Búsqueda</a>
+      <a href="/visas" class="active">Alertas Visa</a>
+      <a href="/salaries">Salarios</a>
+      <a href="/reports">Reportes</a>
+      <a href="/api/docs" target="_blank">API Docs</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <section class="visa-header">
+      <h2>🔔 Alertas de Visa</h2>
+      <div class="filter-controls">
+        <label>Días hasta expiración:
+          <input type="range" id="daysSlider" min="30" max="180" value="90" oninput="updateDaysLabel(this.value)">
+          <span id="daysLabel">90 días</span>
+        </label>
+        <button onclick="loadVisaAlerts()" class="btn btn-primary">Actualizar</button>
+      </div>
+    </section>
+
+    <section class="stats-cards">
+      <div class="card stat-card alert-critical">
+        <div class="stat-icon">🔴</div>
+        <div class="stat-content">
+          <h3>Crítico (≤30 días)</h3>
+          <p class="stat-number" id="criticalCount">0</p>
+        </div>
+      </div>
+      <div class="card stat-card alert-warning">
+        <div class="stat-icon">🟠</div>
+        <div class="stat-content">
+          <h3>Advertencia (31-60)</h3>
+          <p class="stat-number" id="warningCount">0</p>
+        </div>
+      </div>
+      <div class="card stat-card alert-upcoming">
+        <div class="stat-icon">🟡</div>
+        <div class="stat-content">
+          <h3>Próximo (61-90)</h3>
+          <p class="stat-number" id="upcomingCount">0</p>
+        </div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-icon">📋</div>
+        <div class="stat-content">
+          <h3>Total Alertas</h3>
+          <p class="stat-number" id="totalAlerts">0</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="visaAlertsList" class="alerts-list">
+      <p class="placeholder-text">Cargando alertas de visa...</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>&copy; {{currentYear}} Universal Kikaku (UNS) - Shain Daicho Manager v2.0.0</p>
+  </footer>
+
+  <script src="/js/app.js"></script>
+  <script>
+    function updateDaysLabel(value) {
+      document.getElementById('daysLabel').textContent = value + ' días';
+    }
+    document.addEventListener('DOMContentLoaded', loadVisaAlerts);
+  </script>
+</body>
+</html>

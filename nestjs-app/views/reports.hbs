@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reportes y Exportación - UNS</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>🏢 UNS Shain Daicho Manager</h1>
+    </div>
+    <div class="nav-links">
+      <a href="/">Dashboard</a>
+      <a href="/search">Búsqueda</a>
+      <a href="/visas">Alertas Visa</a>
+      <a href="/salaries">Salarios</a>
+      <a href="/reports" class="active">Reportes</a>
+      <a href="/api/docs" target="_blank">API Docs</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <section>
+      <h2>📈 Reportes y Exportación</h2>
+    </section>
+
+    <section class="export-section">
+      <div class="card">
+        <h3>⬇️ Exportar Datos</h3>
+        <div class="export-options">
+          <label class="checkbox-label">
+            <input type="checkbox" id="exportActiveOnly" checked> Solo empleados activos
+          </label>
+        </div>
+        <div class="export-buttons">
+          <a href="#" onclick="downloadExport('excel')" class="btn btn-success">📊 Excel</a>
+          <a href="#" onclick="downloadExport('csv')" class="btn btn-primary">📄 CSV</a>
+          <a href="#" onclick="downloadExport('json')" class="btn btn-secondary">📋 JSON</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="charts-section">
+      <div class="card">
+        <h3>📊 Distribución por Edad</h3>
+        <div id="ageChart"></div>
+      </div>
+      <div class="card">
+        <h3>📊 Análisis de Antigüedad</h3>
+        <div id="tenureChart"></div>
+      </div>
+    </section>
+
+    <section class="charts-section">
+      <div class="card full-width">
+        <h3>📋 Resumen Ejecutivo</h3>
+        <div id="summaryReport"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>&copy; {{currentYear}} Universal Kikaku (UNS) - Shain Daicho Manager v2.0.0</p>
+  </footer>
+
+  <script src="/js/app.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', loadReportsData);
+  </script>
+</body>
+</html>

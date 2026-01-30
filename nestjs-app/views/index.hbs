@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{title}} - Dashboard</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>🏢 UNS Shain Daicho Manager</h1>
+    </div>
+    <div class="nav-links">
+      <a href="/" class="active">Dashboard</a>
+      <a href="/search">Búsqueda</a>
+      <a href="/visas">Alertas Visa</a>
+      <a href="/salaries">Salarios</a>
+      <a href="/reports">Reportes</a>
+      <a href="/api/docs" target="_blank">API Docs</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <section class="upload-section">
+      <h2>📁 Cargar Archivo Excel</h2>
+      <form id="uploadForm" enctype="multipart/form-data">
+        <input type="file" name="file" id="fileInput" accept=".xlsx,.xlsm" required>
+        <button type="submit" class="btn btn-primary">Cargar Datos</button>
+      </form>
+      <div id="uploadStatus"></div>
+    </section>
+
+    <section class="stats-cards">
+      <div class="card stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-content">
+          <h3>Total Empleados</h3>
+          <p class="stat-number" id="totalEmployees">{{stats.total}}</p>
+        </div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-icon">✅</div>
+        <div class="stat-content">
+          <h3>Activos</h3>
+          <p class="stat-number text-success" id="activeEmployees">{{stats.active}}</p>
+        </div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-icon">📤</div>
+        <div class="stat-content">
+          <h3>Inactivos</h3>
+          <p class="stat-number text-muted" id="inactiveEmployees">{{stats.inactive}}</p>
+        </div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-icon">📊</div>
+        <div class="stat-content">
+          <h3>Tasa Activos</h3>
+          <p class="stat-number text-primary" id="activeRate">-</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="charts-section">
+      <div class="card">
+        <h3>📊 Distribución por Categoría</h3>
+        <div id="categoryChart"></div>
+      </div>
+      <div class="card">
+        <h3>🌍 Distribución por Nacionalidad</h3>
+        <div id="nationalityChart"></div>
+      </div>
+    </section>
+
+    <section class="charts-section">
+      <div class="card full-width">
+        <h3>🏭 Top Empresas de Despacho</h3>
+        <div id="dispatchChart"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>&copy; {{currentYear}} Universal Kikaku (UNS) - Shain Daicho Manager v2.0.0</p>
+  </footer>
+
+  <script src="/js/app.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      loadDashboardData();
+    });
+  </script>
+</body>
+</html>
