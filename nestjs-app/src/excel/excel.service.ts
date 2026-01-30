@@ -64,7 +64,7 @@ export class ExcelService {
       this.logger.log('Loading Excel from buffer');
 
       const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.load(buffer);
+      await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
 
       this.employees = [];
 

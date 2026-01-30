@@ -3,28 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import * as nodemailer from 'nodemailer';
 import { ConfigService } from '@nestjs/config';
 import { VisasService } from '../visas/visas.service';
-
-export interface EmailConfig {
-  host: string;
-  port: number;
-  secure: boolean;
-  auth: {
-    user: string;
-    pass: string;
-  };
-}
-
-export interface VisaAlert {
-  employee: {
-    employeeId: number;
-    name: string;
-    nationality: string;
-    dispatchCompany: string;
-  };
-  daysUntilExpiry: number;
-  expiryDate: string;
-  urgencyLevel: string;
-}
+import { VisaAlert } from '../common/interfaces/employee.interface';
 
 @Injectable()
 export class NotificationsService {
