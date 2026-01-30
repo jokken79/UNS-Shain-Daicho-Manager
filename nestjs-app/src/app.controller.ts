@@ -1,12 +1,14 @@
 import { Controller, Get, Render } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiExcludeEndpoint } from '@nestjs/swagger';
 import { ExcelService } from './excel/excel.service';
+import { Public } from './auth/decorators/public.decorator';
 
 @Controller()
 export class AppController {
   constructor(private readonly excelService: ExcelService) {}
 
   @Get()
+  @Public()
   @Render('index')
   @ApiExcludeEndpoint()
   async getIndex() {
@@ -18,7 +20,19 @@ export class AppController {
     };
   }
 
+  @Get('login')
+  @Public()
+  @Render('login')
+  @ApiExcludeEndpoint()
+  getLogin() {
+    return {
+      title: 'Iniciar Sesión',
+      currentYear: new Date().getFullYear(),
+    };
+  }
+
   @Get('search')
+  @Public()
   @Render('search')
   @ApiExcludeEndpoint()
   getSearch() {
@@ -29,6 +43,7 @@ export class AppController {
   }
 
   @Get('visas')
+  @Public()
   @Render('visas')
   @ApiExcludeEndpoint()
   getVisas() {
@@ -39,6 +54,7 @@ export class AppController {
   }
 
   @Get('salaries')
+  @Public()
   @Render('salaries')
   @ApiExcludeEndpoint()
   getSalaries() {
@@ -49,6 +65,7 @@ export class AppController {
   }
 
   @Get('reports')
+  @Public()
   @Render('reports')
   @ApiExcludeEndpoint()
   getReports() {
@@ -59,6 +76,7 @@ export class AppController {
   }
 
   @Get('api/health')
+  @Public()
   @ApiTags('system')
   @ApiOperation({ summary: 'Health check' })
   getHealth() {
