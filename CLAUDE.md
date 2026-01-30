@@ -235,6 +235,10 @@ Follow conventional format:
 
 ## Important Context for AI Assistants
 
+### Communication Language
+
+**IMPORTANTE:** Siempre responder al usuario en español. Todas las interacciones y explicaciones deben ser en español.
+
 ### Language Notes
 
 - **Data fields are in Japanese** - The Excel files and DataFrame columns use Japanese field names
