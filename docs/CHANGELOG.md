@@ -8,12 +8,14 @@ Todos los cambios notables se documentan en este archivo.
 - ✅ AGENTS.md con reglas operativas para agentes (build/lint/test/style y verificacion Context7)
 - ✅ Suite de pruebas `unittest` en `tests/test_shain_daicho.py` con casos de carga, busqueda y exportacion
 - ✅ Seccion de verificacion rapida en `docs/README.md`
+- ✅ Casos de prueba para filtros de `visa-alerts` por dias y formato de export no soportado
 
 ### Changed
 - ✅ `main.py` ahora implementa CLI completo (`summary`, `active`, `visa-alerts`, `search`, `export`) con codigos de salida
 - ✅ `src/app_shain_daicho.py` usa rutas temporales cross-platform y cache por hash del archivo subido
 - ✅ `src/shain_utils.py` mejora validacion de export y normalizacion de formatos/sufijos
 - ✅ `requirements.txt` corrige `openpyxl` a una version instalable (`>=3.1.5,<4.0.0`)
+- ✅ CLI ahora acepta `visa-alerts [days]` y opcion `--help` en `main.py` y `src/shain_utils.py`
 
 ### Fixed
 - ✅ Export en Windows al eliminar dependencias de `/tmp`

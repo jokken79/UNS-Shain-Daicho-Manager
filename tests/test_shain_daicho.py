@@ -4,6 +4,7 @@
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +24,7 @@ class TestShainDaicho(unittest.TestCase):
         cls.temp_dir = tempfile.TemporaryDirectory()
         cls.work_dir = Path(cls.temp_dir.name)
         cls.excel_path = cls.work_dir / 'sample_employees.xlsx'
+        soon_visa = (datetime.now() + timedelta(days=20)).strftime('%Y-%m-%d')
 
         df_genzai = pd.DataFrame([
             {
@@ -33,7 +35,7 @@ class TestShainDaicho(unittest.TestCase):
                 '派遣先': 'Company A',
                 '国籍': 'ベトナム',
                 '入社日': '2024-01-01',
-                'ビザ期限': '2099-12-31',
+                'ビザ期限': soon_visa,
                 'ビザ種類': 'Engineer',
                 '時給': 1200,
                 '請求単価': 1800,
@@ -85,10 +87,21 @@ class TestShainDaicho(unittest.TestCase):
             }
         ])
 
+        df_taisha = pd.DataFrame([
+            {
+                '社員№': 4001,
+                '氏名': 'FORMER EMPLOYEE',
+                'カナ': 'フォーマー',
+                '退社日': '2023-10-01',
+                '国籍': '日本',
+            }
+        ])
+
         with pd.ExcelWriter(cls.excel_path, engine='openpyxl') as writer:
             df_genzai.to_excel(writer, sheet_name='DBGenzaiX', index=False)
             df_ukeoi.to_excel(writer, sheet_name='DBUkeoiX', index=False)
             df_staff.to_excel(writer, sheet_name='DBStaffX', index=False)
+            df_taisha.to_excel(writer, sheet_name='DBTaishaX', index=False)
 
     @classmethod
     def tearDownClass(cls):
@@ -142,6 +155,23 @@ class TestShainDaicho(unittest.TestCase):
         self.assertTrue((export_dir / 'active_employees_派遣.csv').exists())
         self.assertTrue((export_dir / 'active_employees_請負.csv').exists())
         self.assertTrue((export_dir / 'active_employees_Staff.csv').exists())
+
+    def test_export_unsupported_format_returns_none(self):
+        sd = self._load_daicho()
+        result = sd.export_active_employees(str(self.work_dir / 'exports' / 'bad.out'), format='xml')
+
+        self.assertIsNone(result)
+
+    def test_visa_alerts_respects_days_parameter(self):
+        sd = self._load_daicho()
+        alerts_30 = sd.get_visa_alerts(days=30)
+        alerts_5 = sd.get_visa_alerts(days=5)
+
+        names_30 = {alert['name'] for alert in alerts_30}
+        names_5 = {alert['name'] for alert in alerts_5}
+
+        self.assertIn('NGUYEN TEST', names_30)
+        self.assertNotIn('NGUYEN TEST', names_5)
 
 
 if __name__ == '__main__':

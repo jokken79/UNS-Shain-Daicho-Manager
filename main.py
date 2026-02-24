@@ -28,7 +28,12 @@ def _print_usage() -> None:
     print("  streamlit run src/app_shain_daicho.py")
     print("\n  # Or use CLI:")
     print("  python main.py <file.xlsm> <command>")
-    print("\nCommands: summary, active, visa-alerts, search <name>, export <format>")
+    print("\nCommands:")
+    print("  summary               - Show summary statistics")
+    print("  active                - Count active employees")
+    print("  visa-alerts [days]    - Show visa expiration alerts (default: 90)")
+    print("  search <name>         - Search employee by name")
+    print("  export <format>       - Export data (excel|json|csv)")
 
 
 def _run_command(sd: ShainDaicho, command: str, args: List[str]) -> int:
@@ -44,8 +49,16 @@ def _run_command(sd: ShainDaicho, command: str, args: List[str]) -> int:
         return 0
 
     if command == 'visa-alerts':
-        alerts = sd.get_visa_alerts(days=90)
-        print(f"Visa alerts (next 90 days): {len(alerts)}\n")
+        days = 90
+        if args:
+            try:
+                days = max(int(args[0]), 0)
+            except ValueError:
+                print("Error: visa-alerts optional days must be an integer")
+                return 1
+
+        alerts = sd.get_visa_alerts(days=days)
+        print(f"Visa alerts (next {days} days): {len(alerts)}\n")
         for alert in alerts[:15]:
             print(
                 f"  {alert['alert_level']} {str(alert['name']):20} "
@@ -95,6 +108,10 @@ def _run_command(sd: ShainDaicho, command: str, args: List[str]) -> int:
     return 1
 
 if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] in ['-h', '--help']:
+        _print_usage()
+        sys.exit(0)
+
     if len(sys.argv) < 2:
         _print_usage()
         sys.exit(1)

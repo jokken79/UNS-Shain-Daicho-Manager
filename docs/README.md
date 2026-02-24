@@ -17,6 +17,9 @@ python src/shain_utils.py "tu_archivo.xlsm" summary
 # Ver alertas de visa
 python src/shain_utils.py "tu_archivo.xlsm" visa-alerts
 
+# Ver alertas de visa para una ventana personalizada (ej: 60 dias)
+python src/shain_utils.py "tu_archivo.xlsm" visa-alerts 60
+
 # Buscar empleado
 python src/shain_utils.py "tu_archivo.xlsm" search NGUYEN
 ```

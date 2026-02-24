@@ -457,8 +457,10 @@ class ShainDaicho:
     ) -> List[Dict]:
         """Get employees with visa expiring within specified days"""
         self._ensure_loaded()
-        
-        cutoff = datetime.now() + timedelta(days=days)
+
+        days = max(int(days), 0)
+        reference_now = datetime.now()
+        cutoff = reference_now + timedelta(days=days)
         alerts = []
         
         try:
@@ -491,7 +493,7 @@ class ShainDaicho:
                 
                 for _, row in expiring.iterrows():
                     visa_date = row['visa_date']
-                    days_left = (visa_date - datetime.now()).days
+                    days_left = (visa_date - reference_now).days
                     
                     # Alert level based on days remaining
                     if days_left <= 0:
@@ -656,15 +658,25 @@ class ShainDaicho:
 
 if __name__ == '__main__':
     import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] in ['-h', '--help']:
+        print("Usage: python src/shain_utils.py <path_to_社員台帳.xlsm> [command]")
+        print("\nCommands:")
+        print("  summary               - Show summary statistics")
+        print("  active                - Count active employees")
+        print("  visa-alerts [days]    - Show visa expiration alerts (default: 90)")
+        print("  search <name>         - Search employee by name")
+        print("  export <format>       - Export data (excel|json|csv)")
+        sys.exit(0)
     
     if len(sys.argv) < 2:
-        print("Usage: python shain_utils.py <path_to_社員台帳.xlsm> [command]")
+        print("Usage: python src/shain_utils.py <path_to_社員台帳.xlsm> [command]")
         print("\nCommands:")
-        print("  summary          - Show summary statistics")
-        print("  active           - Count active employees")
-        print("  visa-alerts      - Show visa expiration alerts")
-        print("  search <name>    - Search employee by name")
-        print("  export <format>  - Export data (excel|json|csv)")
+        print("  summary               - Show summary statistics")
+        print("  active                - Count active employees")
+        print("  visa-alerts [days]    - Show visa expiration alerts (default: 90)")
+        print("  search <name>         - Search employee by name")
+        print("  export <format>       - Export data (excel|json|csv)")
         sys.exit(1)
     
     filepath = sys.argv[1]
@@ -690,8 +702,16 @@ if __name__ == '__main__':
         print(f"Active employees: {total.get('active', 0)}/{total.get('total', 0)}")
     
     elif command == 'visa-alerts':
-        alerts = sd.get_visa_alerts(days=90)
-        print(f"Visa alerts (next 90 days): {len(alerts)}\n")
+        days = 90
+        if len(sys.argv) > 3:
+            try:
+                days = max(int(sys.argv[3]), 0)
+            except ValueError:
+                print("❌ Invalid days argument for visa-alerts. Use an integer.")
+                sys.exit(1)
+
+        alerts = sd.get_visa_alerts(days=days)
+        print(f"Visa alerts (next {days} days): {len(alerts)}\n")
         for alert in alerts[:15]:
             print(f"  {alert['alert_level']} {alert['name']:20} "
                   f"- {alert['expiry_date']} ({alert['days_left']} days)")
