@@ -1,39 +1,31 @@
 #!/usr/bin/env python3
 """
-UNS 社員台帳 — SQLite Database Backend
-Provides full CRUD for genzai (派遣), ukeoi (請負), and staff (スタッフ) tables.
+UNS 社員台帳 — SQLite Database Backend  (v2 — full CRUD, audit log, soft-delete)
 
-Usage:
-    from database import ShainDatabase
-    db = ShainDatabase('data/shain_daicho.db')
-    db.init_db()
-
-    # One-time import from Excel
-    db.import_from_excel('path/to/社員台帳.xlsm')
-
-    # Query
-    df = db.get_all('genzai', active_only=True)
-
-    # CRUD
-    new_id = db.add_employee('genzai', {'氏名': '山田 太郎', ...})
-    db.update_employee('genzai', new_id, {'時給': 1200})
-    db.delete_employee('genzai', new_id)
+Key design decisions
+────────────────────
+• Per-call connections (thread-safe for Streamlit multi-session).
+• WAL mode + busy_timeout=5000 ms for concurrent LAN access.
+• Soft-delete: records gain a `deleted_at` timestamp; hard-delete is admin-only.
+• Audit log: every write (INSERT/UPDATE/DELETE/RESTORE) is journaled.
+• Schema migration: safe to run init_db() on an existing DB (ALTER TABLE IF missing).
 """
 
+import json
 import sqlite3
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Column definitions (matches actual Excel sheets)
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Column definitions (matches real Excel sheets exactly)
+# ─────────────────────────────────────────────────────────────────────────────
 
 GENZAI_COLS = [
     "現在", "社員№", "派遣先ID", "派遣先", "配属先", "配属ライン", "仕事内容",
@@ -58,34 +50,79 @@ STAFF_COLS = [
     "社保加入", "雇用保険", "携帯電話", "携帯代行", "銀行", "支店", "口座番号", "名義",
 ]
 
-# Columns that store dates (ISO string in DB)
-DATE_COLS = {"生年月日", "ビザ期限", "入居", "入社日", "退社日", "退去", "免許期限", "任意保険期限"}
+# Field classification
+DATE_COLS = {
+    "生年月日", "ビザ期限", "入居", "入社日", "退社日", "退去",
+    "免許期限", "任意保険期限",
+}
 
-# Columns that store numbers
 NUMERIC_COLS = {
     "社員№", "年齢", "時給", "時給改定", "請求単価", "請求改定", "差額利益",
     "標準報酬", "健康保険", "介護保険", "厚生年金", "通勤距離", "交通費",
     "派遣先ID", "支店番号",
 }
 
+# Grouped display schema for detail forms
+GENZAI_GROUPS: Dict[str, List[str]] = {
+    "基本情報":  ["現在", "社員№", "氏名", "カナ", "性別", "国籍", "生年月日", "年齢"],
+    "就業情報":  ["派遣先ID", "派遣先", "配属先", "配属ライン", "仕事内容",
+                  "入社日", "退社日", "現入社", "入社依頼"],
+    "給与情報":  ["時給", "時給改定", "請求単価", "請求改定", "差額利益"],
+    "社会保険":  ["標準報酬", "健康保険", "介護保険", "厚生年金", "社保加入"],
+    "ビザ・免許": ["ビザ期限", "ビザ種類", "免許種類", "免許期限",
+                   "日本語検定", "キャリアアップ5年目"],
+    "住所・居住": ["〒", "住所", "ｱﾊﾟｰﾄ", "入居", "退去"],
+    "その他":    ["通勤方法", "任意保険期限", "備考"],
+}
 
-# ---------------------------------------------------------------------------
+UKEOI_GROUPS: Dict[str, List[str]] = {
+    "基本情報":  ["現在", "社員№", "氏名", "カナ", "性別", "国籍", "生年月日", "年齢"],
+    "就業情報":  ["請負業務", "入社日", "退社日", "入社依頼"],
+    "給与情報":  ["時給", "時給改定", "差額利益", "交通費", "通勤距離"],
+    "社会保険":  ["標準報酬", "健康保険", "介護保険", "厚生年金", "社保加入"],
+    "ビザ":      ["ビザ期限", "ビザ種類"],
+    "住所・居住": ["〒", "住所", "ｱﾊﾟｰﾄ", "入居", "退去"],
+    "口座情報":  ["口座名義", "銀行名", "支店番号", "支店名", "口座番号"],
+    "その他":    ["備考"],
+}
+
+STAFF_GROUPS: Dict[str, List[str]] = {
+    "基本情報":  ["現在", "社員№", "氏名", "カナ", "性別", "国籍", "生年月日", "年齢"],
+    "就業情報":  ["事務所", "入社日", "退社日", "配偶者"],
+    "社会保険":  ["社保加入", "雇用保険"],
+    "ビザ":      ["ビザ期限", "ビザ種類"],
+    "住所":      ["〒", "住所", "建物名"],
+    "口座・連絡": ["銀行", "支店", "口座番号", "名義", "携帯電話", "携帯代行"],
+}
+
+TABLE_GROUPS = {
+    "genzai": GENZAI_GROUPS,
+    "ukeoi":  UKEOI_GROUPS,
+    "staff":  STAFF_GROUPS,
+}
+
+# Default columns shown in the quick table (8-10 per type)
+DEFAULT_VISIBLE: Dict[str, List[str]] = {
+    "genzai": ["現在", "社員№", "氏名", "カナ", "派遣先", "時給", "請求単価", "差額利益", "ビザ期限", "入社日"],
+    "ukeoi":  ["現在", "社員№", "氏名", "カナ", "請負業務", "時給", "差額利益", "ビザ期限", "入社日"],
+    "staff":  ["現在", "社員№", "氏名", "カナ", "事務所", "ビザ期限", "入社日", "退社日"],
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
-def _safe_col(col: str) -> str:
-    """Quote column name for SQLite (handles Japanese + special chars)."""
+def _q(col: str) -> str:
+    """Return a double-quoted column name safe for SQLite."""
     return f'"{col}"'
 
 
-def _cols_ddl(cols: List[str]) -> str:
-    """Build column definition string for CREATE TABLE."""
-    return ", ".join(f'{_safe_col(c)} TEXT' for c in cols)
-
-
 def _excel_date_to_iso(value: Any) -> Optional[str]:
-    """Convert Excel serial date number or pd.Timestamp to ISO date string."""
-    if value is None or (isinstance(value, float) and np.isnan(value)):
+    """Convert various date representations to YYYY-MM-DD string."""
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
         return None
     if isinstance(value, (pd.Timestamp, datetime)):
         if pd.isna(value):
@@ -95,11 +132,9 @@ def _excel_date_to_iso(value: Any) -> Optional[str]:
         n = float(value)
         if n == 0:
             return None
-        # Excel serial date: days since 1899-12-30
         dt = pd.Timestamp("1899-12-30") + pd.Timedelta(days=n)
         return dt.strftime("%Y-%m-%d")
     except (TypeError, ValueError):
-        # Try parsing as string
         try:
             ts = pd.to_datetime(str(value), errors="raise")
             return ts.strftime("%Y-%m-%d")
@@ -107,100 +142,116 @@ def _excel_date_to_iso(value: Any) -> Optional[str]:
             return None
 
 
-def _clean_value(col: str, value: Any) -> Optional[str]:
-    """Coerce a cell value to a storable string (or None for NULL)."""
-    # Treat explicit "0" strings and NaN as NULL
+def _clean(col: str, value: Any) -> Optional[str]:
+    """Coerce an Excel cell value to a storable string (None → SQL NULL)."""
     if value is None:
         return None
     if isinstance(value, float) and np.isnan(value):
         return None
-    str_val = str(value).strip()
-    if str_val in ("0", "nan", "NaT", "None", ""):
+    sv = str(value).strip()
+    if sv in ("0", "nan", "NaT", "None", "NaN", ""):
         return None
-
     if col in DATE_COLS:
         return _excel_date_to_iso(value)
-
     if col in NUMERIC_COLS:
         try:
             f = float(value)
             if np.isnan(f):
                 return None
-            # Store as integer string when whole, else float
             return str(int(f)) if f == int(f) else str(f)
         except (TypeError, ValueError):
             pass
+    return sv
 
-    return str_val if str_val else None
 
-
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # ShainDatabase
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 class ShainDatabase:
-    """SQLite-backed storage for 社員台帳 with full CRUD support."""
+    """
+    SQLite backend for 社員台帳 with full CRUD, soft-delete, and audit log.
 
-    DB_VERSION = 1
+    Thread safety: every public method opens its own connection (WAL mode
+    allows unlimited concurrent readers + one writer at a time).
+    """
+
     COMPANY_BURDEN_RATE = 0.1576
+    _ALL_TABLES = ("genzai", "ukeoi", "staff")
 
     def __init__(self, db_path: str = "data/shain_daicho.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn: Optional[sqlite3.Connection] = None
 
-    # ------------------------------------------------------------------
-    # Connection management
-    # ------------------------------------------------------------------
+    # ── Connection ────────────────────────────────────────────────────────
 
     def _get_conn(self) -> sqlite3.Connection:
-        """Return a thread-local connection (lazy init)."""
-        if self._conn is None:
-            self._conn = sqlite3.connect(
-                str(self.db_path),
-                check_same_thread=False,
-                timeout=10,
-            )
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys=ON")
-        return self._conn
+        """Open a new WAL-mode connection. Caller must close it."""
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
 
-    def close(self):
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+    # ── Schema ────────────────────────────────────────────────────────────
 
-    # ------------------------------------------------------------------
-    # Schema
-    # ------------------------------------------------------------------
+    def init_db(self) -> None:
+        """Create tables + run schema migrations. Safe to call repeatedly."""
+        with self._get_conn() as conn:
+            for table, cols in [
+                ("genzai", GENZAI_COLS),
+                ("ukeoi",  UKEOI_COLS),
+                ("staff",  STAFF_COLS),
+            ]:
+                col_defs = ", ".join(f'{_q(c)} TEXT' for c in cols)
+                conn.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {table} (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        {col_defs},
+                        deleted_at TEXT DEFAULT NULL,
+                        updated_at TEXT DEFAULT (datetime('now','localtime'))
+                    )
+                """)
 
-    def init_db(self):
-        """Create tables if they don't exist."""
-        conn = self._get_conn()
-        for table, cols in [
-            ("genzai", GENZAI_COLS),
-            ("ukeoi", UKEOI_COLS),
-            ("staff", STAFF_COLS),
-        ]:
-            col_defs = _cols_ddl(cols)
-            conn.execute(f"""
-                CREATE TABLE IF NOT EXISTS {table} (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    {col_defs},
-                    updated_at TEXT DEFAULT (datetime('now','localtime'))
+            # Audit log
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    table_name  TEXT NOT NULL,
+                    row_id      INTEGER,
+                    action      TEXT NOT NULL,
+                    employee_name TEXT,
+                    changes     TEXT,
+                    changed_at  TEXT DEFAULT (datetime('now','localtime'))
                 )
             """)
-        conn.commit()
-        logger.info("Database schema initialised at %s", self.db_path)
+            conn.commit()
+
+        # Migration: add columns that may be absent in older DBs
+        self._migrate()
+        logger.info("DB schema ready: %s", self.db_path)
+
+    def _migrate(self) -> None:
+        """Add any missing columns to existing tables (idempotent)."""
+        conn = self._get_conn()
+        try:
+            for table in self._ALL_TABLES:
+                existing = {
+                    r["name"]
+                    for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+                for col in ("deleted_at", "updated_at"):
+                    if col not in existing:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {_q(col)} TEXT DEFAULT NULL")
+            conn.commit()
+        finally:
+            conn.close()
 
     def _table_cols(self, table: str) -> List[str]:
-        table_map = {"genzai": GENZAI_COLS, "ukeoi": UKEOI_COLS, "staff": STAFF_COLS}
-        return table_map[table]
+        return {"genzai": GENZAI_COLS, "ukeoi": UKEOI_COLS, "staff": STAFF_COLS}[table]
 
-    # ------------------------------------------------------------------
-    # Import
-    # ------------------------------------------------------------------
+    # ── Import ────────────────────────────────────────────────────────────
 
     def import_from_excel(
         self,
@@ -208,282 +259,445 @@ class ShainDatabase:
         progress_callback=None,
     ) -> Dict[str, int]:
         """
-        Import all 3 sheets from the .xlsm file into the database.
-        Existing data is REPLACED (truncate-insert).
-
-        progress_callback: optional callable(message: str, fraction: float)
-        Returns dict with row counts per table.
+        Truncate + re-import all 3 sheets from .xlsm.
+        Existing soft-deleted records are also wiped (fresh start).
+        Returns {table: row_count}.
         """
         path = Path(excel_path)
         if not path.exists():
             raise FileNotFoundError(f"Excel file not found: {path}")
 
-        def _progress(msg: str, frac: float):
+        def _prog(msg: str, frac: float):
             logger.info(msg)
             if progress_callback:
                 progress_callback(msg, frac)
 
-        conn = self._get_conn()
         counts: Dict[str, int] = {}
-
         sheet_map = [
             ("DBGenzaiX", "genzai", GENZAI_COLS, "派遣社員"),
-            ("DBUkeoiX", "ukeoi", UKEOI_COLS, "請負社員"),
-            ("DBStaffX", "staff", STAFF_COLS, "スタッフ"),
+            ("DBUkeoiX",  "ukeoi",  UKEOI_COLS,  "請負社員"),
+            ("DBStaffX",  "staff",  STAFF_COLS,   "スタッフ"),
         ]
 
-        for i, (sheet_name, table, cols, label) in enumerate(sheet_map):
-            _progress(f"{label} シートを読み込み中…", i / len(sheet_map))
-            try:
-                df = pd.read_excel(path, sheet_name=sheet_name, dtype=str)
-            except Exception as e:
-                logger.warning("Could not read sheet %s: %s", sheet_name, e)
-                counts[table] = 0
-                continue
-
-            # DBStaffX: first column may be "№" — remap to "現在"
-            if table == "staff" and df.columns[0] != "現在":
-                df = df.rename(columns={df.columns[0]: "現在"})
-
-            # Drop formula-only column that doesn't survive import cleanly
-            if "ｱﾗｰﾄ(ﾋﾞｻﾞ更新)" in df.columns:
-                df = df.drop(columns=["ｱﾗｰﾄ(ﾋﾞｻﾞ更新)"])
-
-            # Truncate existing data
-            conn.execute(f"DELETE FROM {table}")
-
-            inserted = 0
-            col_list = ", ".join(_safe_col(c) for c in cols if c in df.columns)
-            placeholders = ", ".join("?" for c in cols if c in df.columns)
-            active_cols = [c for c in cols if c in df.columns]
-
-            for _, row in df.iterrows():
-                values = [_clean_value(c, row.get(c)) for c in active_cols]
-                # Skip completely empty rows
-                if all(v is None for v in values):
+        conn = self._get_conn()
+        try:
+            for i, (sheet, table, cols, label) in enumerate(sheet_map):
+                _prog(f"{label} 読み込み中…", i / len(sheet_map))
+                try:
+                    df = pd.read_excel(path, sheet_name=sheet, dtype=str)
+                except Exception as exc:
+                    logger.warning("Sheet %s missing: %s", sheet, exc)
+                    counts[table] = 0
                     continue
-                conn.execute(
-                    f"INSERT INTO {table} ({col_list}, updated_at) VALUES ({placeholders}, datetime('now','localtime'))",
-                    values,
-                )
-                inserted += 1
 
+                # Remap first column of staff sheet
+                if table == "staff" and df.columns[0] != "現在":
+                    df = df.rename(columns={df.columns[0]: "現在"})
+
+                # Drop calculated-only columns
+                for drop_col in ("ｱﾗｰﾄ(ﾋﾞｻﾞ更新)",):
+                    if drop_col in df.columns:
+                        df = df.drop(columns=[drop_col])
+
+                conn.execute(f"DELETE FROM {table}")
+
+                active = [c for c in cols if c in df.columns]
+                col_list = ", ".join(_q(c) for c in active)
+                ph = ", ".join("?" for _ in active)
+                inserted = 0
+
+                for _, row in df.iterrows():
+                    vals = [_clean(c, row.get(c)) for c in active]
+                    if all(v is None for v in vals):
+                        continue
+                    conn.execute(
+                        f"INSERT INTO {table} ({col_list}, updated_at) "
+                        f"VALUES ({ph}, datetime('now','localtime'))",
+                        vals,
+                    )
+                    inserted += 1
+
+                conn.commit()
+                counts[table] = inserted
+                _prog(f"✅ {label}: {inserted} 件", (i + 1) / len(sheet_map))
+
+            # Log import event
+            conn.execute(
+                "INSERT INTO audit_log (table_name, action, employee_name, changes) VALUES (?,?,?,?)",
+                ("*", "IMPORT", "system",
+                 json.dumps(counts, ensure_ascii=False)),
+            )
             conn.commit()
-            counts[table] = inserted
-            _progress(f"✅ {label}: {inserted} 件インポート完了", (i + 1) / len(sheet_map))
+        finally:
+            conn.close()
 
-        logger.info("Import complete: %s", counts)
         return counts
 
-    # ------------------------------------------------------------------
-    # Read
-    # ------------------------------------------------------------------
+    def preview_excel(self, excel_path: str) -> Dict[str, Any]:
+        """Parse Excel and return counts + sample rows (no DB write)."""
+        path = Path(excel_path)
+        result: Dict[str, Any] = {}
+        sheet_map = [
+            ("DBGenzaiX", "genzai", "派遣社員"),
+            ("DBUkeoiX",  "ukeoi",  "請負社員"),
+            ("DBStaffX",  "staff",  "スタッフ"),
+        ]
+        for sheet, table, label in sheet_map:
+            try:
+                df = pd.read_excel(path, sheet_name=sheet, dtype=str)
+                if table == "staff" and df.columns[0] != "現在":
+                    df = df.rename(columns={df.columns[0]: "現在"})
+                result[table] = {
+                    "label": label,
+                    "rows": len(df),
+                    "sample": df.head(5).to_dict("records"),
+                    "columns": list(df.columns),
+                }
+            except Exception as exc:
+                result[table] = {"label": label, "rows": 0, "error": str(exc)}
+        return result
 
-    def get_all(self, table: str, active_only: bool = False) -> pd.DataFrame:
-        """Return all rows from a table as a DataFrame."""
+    # ── Read ──────────────────────────────────────────────────────────────
+
+    def get_all(
+        self,
+        table: str,
+        active_only: bool = False,
+        include_deleted: bool = False,
+    ) -> pd.DataFrame:
+        """Return rows as DataFrame. By default excludes soft-deleted rows."""
         conn = self._get_conn()
-        query = f"SELECT * FROM {table}"
-        if active_only:
-            if table in ("genzai", "ukeoi"):
-                query += ' WHERE "現在" = \'在職中\''
-            elif table == "staff":
-                query += ' WHERE "入社日" IS NOT NULL AND "退社日" IS NULL'
-        df = pd.read_sql_query(query, conn)
-        return df
+        try:
+            clauses = []
+            if not include_deleted:
+                clauses.append("deleted_at IS NULL")
+            if active_only:
+                if table in ("genzai", "ukeoi"):
+                    clauses.append('"現在" = \'在職中\'')
+                elif table == "staff":
+                    clauses.append('"入社日" IS NOT NULL AND "退社日" IS NULL')
+
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            return pd.read_sql_query(f"SELECT * FROM {table} {where}", conn)
+        finally:
+            conn.close()
+
+    def get_deleted(self, table: str) -> pd.DataFrame:
+        """Return soft-deleted rows."""
+        conn = self._get_conn()
+        try:
+            return pd.read_sql_query(
+                f"SELECT * FROM {table} WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
+                conn,
+            )
+        finally:
+            conn.close()
 
     def get_employee(self, table: str, row_id: int) -> Optional[Dict]:
-        """Return a single row as a dict."""
         conn = self._get_conn()
-        cur = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,))
-        row = cur.fetchone()
-        return dict(row) if row else None
+        try:
+            cur = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
 
-    # ------------------------------------------------------------------
-    # Create
-    # ------------------------------------------------------------------
+    # ── Create ────────────────────────────────────────────────────────────
 
     def add_employee(self, table: str, data: Dict) -> int:
-        """Insert a new employee record. Returns the new row id."""
         cols = self._table_cols(table)
+        valid = {k: _clean(k, v) for k, v in data.items() if k in cols}
+        col_list = ", ".join(_q(k) for k in valid)
+        ph = ", ".join("?" for _ in valid)
+        values = list(valid.values())
+        name = valid.get("氏名", "")
+
         conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                f"INSERT INTO {table} ({col_list}, updated_at) "
+                f"VALUES ({ph}, datetime('now','localtime'))",
+                values,
+            )
+            new_id = cur.lastrowid
+            conn.execute(
+                "INSERT INTO audit_log (table_name, row_id, action, employee_name, changes) VALUES (?,?,?,?,?)",
+                (table, new_id, "INSERT", name,
+                 json.dumps({k: str(v) for k, v in valid.items()}, ensure_ascii=False)),
+            )
+            conn.commit()
+            return new_id
+        finally:
+            conn.close()
 
-        # Only insert known columns
-        valid = {k: v for k, v in data.items() if k in cols}
-        col_list = ", ".join(_safe_col(k) for k in valid)
-        placeholders = ", ".join("?" for _ in valid)
-        values = [_clean_value(k, v) for k, v in valid.items()]
-
-        cur = conn.execute(
-            f"INSERT INTO {table} ({col_list}, updated_at) VALUES ({placeholders}, datetime('now','localtime'))",
-            values,
-        )
-        conn.commit()
-        return cur.lastrowid
-
-    # ------------------------------------------------------------------
-    # Update
-    # ------------------------------------------------------------------
+    # ── Update ────────────────────────────────────────────────────────────
 
     def update_employee(self, table: str, row_id: int, data: Dict) -> bool:
-        """Update fields for a given row. Returns True on success."""
         cols = self._table_cols(table)
-        conn = self._get_conn()
-
-        valid = {k: v for k, v in data.items() if k in cols}
+        valid = {k: _clean(k, v) for k, v in data.items() if k in cols}
         if not valid:
             return False
 
-        set_clause = ", ".join(f'{_safe_col(k)} = ?' for k in valid)
-        values = [_clean_value(k, v) for k, v in valid.items()]
-        values.append(row_id)
+        # Capture old values for audit
+        old = self.get_employee(table, row_id) or {}
+        changed = {
+            k: {"old": str(old.get(k, "")), "new": str(v)}
+            for k, v in valid.items()
+            if str(old.get(k, "")) != str(v or "")
+        }
 
-        conn.execute(
-            f"UPDATE {table} SET {set_clause}, updated_at = datetime('now','localtime') WHERE id = ?",
-            values,
-        )
-        conn.commit()
-        return True
+        set_clause = ", ".join(f"{_q(k)} = ?" for k in valid)
+        values = list(valid.values()) + [row_id]
+        name = old.get("氏名", "")
 
-    # ------------------------------------------------------------------
-    # Delete
-    # ------------------------------------------------------------------
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                f"UPDATE {table} SET {set_clause}, updated_at = datetime('now','localtime') WHERE id = ?",
+                values,
+            )
+            if changed:
+                conn.execute(
+                    "INSERT INTO audit_log (table_name, row_id, action, employee_name, changes) VALUES (?,?,?,?,?)",
+                    (table, row_id, "UPDATE", name,
+                     json.dumps(changed, ensure_ascii=False)),
+                )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    # ── Soft Delete / Restore ─────────────────────────────────────────────
 
     def delete_employee(self, table: str, row_id: int) -> bool:
-        """Hard-delete a row. Returns True on success."""
+        """Soft-delete: set deleted_at timestamp (recoverable)."""
+        emp = self.get_employee(table, row_id)
+        name = emp.get("氏名", "") if emp else ""
         conn = self._get_conn()
-        cur = conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
-        conn.commit()
-        return cur.rowcount > 0
+        try:
+            cur = conn.execute(
+                f"UPDATE {table} SET deleted_at = datetime('now','localtime') WHERE id = ?",
+                (row_id,),
+            )
+            conn.execute(
+                "INSERT INTO audit_log (table_name, row_id, action, employee_name) VALUES (?,?,?,?)",
+                (table, row_id, "DELETE", name),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
 
-    # ------------------------------------------------------------------
-    # Stats helpers (mirrors ShainDaicho API)
-    # ------------------------------------------------------------------
+    def restore_employee(self, table: str, row_id: int) -> bool:
+        """Restore a soft-deleted record."""
+        emp = self.get_employee(table, row_id)
+        name = emp.get("氏名", "") if emp else ""
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                f"UPDATE {table} SET deleted_at = NULL, "
+                f"updated_at = datetime('now','localtime') WHERE id = ?",
+                (row_id,),
+            )
+            conn.execute(
+                "INSERT INTO audit_log (table_name, row_id, action, employee_name) VALUES (?,?,?,?)",
+                (table, row_id, "RESTORE", name),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def hard_delete_employee(self, table: str, row_id: int) -> bool:
+        """Permanently delete a record (admin-only, irreversible)."""
+        emp = self.get_employee(table, row_id)
+        name = emp.get("氏名", "") if emp else ""
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+            conn.execute(
+                "INSERT INTO audit_log (table_name, row_id, action, employee_name) VALUES (?,?,?,?)",
+                (table, row_id, "HARD_DELETE", name),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    # ── Audit Log ─────────────────────────────────────────────────────────
+
+    def get_audit_log(
+        self,
+        table: Optional[str] = None,
+        limit: int = 200,
+    ) -> pd.DataFrame:
+        conn = self._get_conn()
+        try:
+            if table:
+                q = "SELECT * FROM audit_log WHERE table_name = ? ORDER BY changed_at DESC LIMIT ?"
+                return pd.read_sql_query(q, conn, params=(table, limit))
+            else:
+                q = "SELECT * FROM audit_log ORDER BY changed_at DESC LIMIT ?"
+                return pd.read_sql_query(q, conn, params=(limit,))
+        finally:
+            conn.close()
+
+    # ── Stats ─────────────────────────────────────────────────────────────
 
     def get_summary_stats(self) -> Dict:
-        """Return summary counts per table."""
         conn = self._get_conn()
-        result = {}
-
-        for table, label, status_col in [
-            ("genzai", "派遣社員", "現在"),
-            ("ukeoi", "請負社員", "現在"),
-            ("staff", "スタッフ", None),
-        ]:
-            total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            if status_col:
-                active = conn.execute(
-                    f'SELECT COUNT(*) FROM {table} WHERE "{status_col}" = ?', ("在職中",)
+        try:
+            result = {}
+            for table, label, status_col in [
+                ("genzai", "派遣社員", "現在"),
+                ("ukeoi",  "請負社員", "現在"),
+                ("staff",  "スタッフ",  None),
+            ]:
+                total = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NULL"
                 ).fetchone()[0]
-            else:
-                active = conn.execute(
-                    f'SELECT COUNT(*) FROM {table} WHERE "入社日" IS NOT NULL AND "退社日" IS NULL'
-                ).fetchone()[0]
-            result[label] = {"total": total, "active": active, "retired": total - active}
+                if status_col:
+                    active = conn.execute(
+                        f'SELECT COUNT(*) FROM {table} WHERE "現在" = ? AND deleted_at IS NULL',
+                        ("在職中",),
+                    ).fetchone()[0]
+                else:
+                    active = conn.execute(
+                        f'SELECT COUNT(*) FROM {table} '
+                        f'WHERE "入社日" IS NOT NULL AND "退社日" IS NULL AND deleted_at IS NULL'
+                    ).fetchone()[0]
+                result[label] = {"total": total, "active": active, "retired": total - active}
 
-        totals = {k: sum(v[k] for v in result.values()) for k in ("total", "active", "retired")}
-        result["total"] = totals
-        return result
+            totals = {k: sum(v[k] for v in result.values()) for k in ("total", "active", "retired")}
+            result["total"] = totals
+            return result
+        finally:
+            conn.close()
 
     def get_visa_alerts(self, days: int = 90) -> List[Dict]:
-        """Return employees whose visa expires within `days` days."""
-        conn = self._get_conn()
         today = datetime.now()
         cutoff = (today + timedelta(days=days)).strftime("%Y-%m-%d")
-        today_str = today.strftime("%Y-%m-%d")
         alerts: List[Dict] = []
+        conn = self._get_conn()
+        try:
+            for table, label, status_col in [
+                ("genzai", "派遣", "現在"),
+                ("ukeoi",  "請負", "現在"),
+                ("staff",  "スタッフ", None),
+            ]:
+                where_status = f' AND "現在" = \'在職中\'' if status_col else ""
+                rows = conn.execute(
+                    f"""
+                    SELECT id, "社員№", "氏名", "ビザ種類", "ビザ期限"
+                    FROM {table}
+                    WHERE "ビザ期限" IS NOT NULL
+                      AND "ビザ期限" != ''
+                      AND "ビザ期限" <= ?
+                      AND deleted_at IS NULL
+                      {where_status}
+                    ORDER BY "ビザ期限"
+                    """,
+                    (cutoff,),
+                ).fetchall()
 
-        table_map = [
-            ("genzai", "派遣", "現在"),
-            ("ukeoi", "請負", "現在"),
-            ("staff", "スタッフ", None),
-        ]
+                for row in rows:
+                    try:
+                        expiry = datetime.strptime(row["ビザ期限"][:10], "%Y-%m-%d")
+                        days_left = (expiry - today).days
+                    except (ValueError, TypeError):
+                        continue
 
-        for table, label, status_col in table_map:
-            where_status = f' AND "{status_col}" = \'在職中\'' if status_col else ""
-            rows = conn.execute(
-                f"""
-                SELECT id, "社員№", "氏名", "ビザ種類", "ビザ期限"
-                FROM {table}
-                WHERE "ビザ期限" IS NOT NULL
-                  AND "ビザ期限" <= ?
-                  {where_status}
-                ORDER BY "ビザ期限"
-                """,
-                (cutoff,),
-            ).fetchall()
+                    if days_left <= 0:
+                        level, cls = "🔴 期限切れ", "expired"
+                    elif days_left <= 30:
+                        level, cls = "🔴 緊急", "urgent"
+                    elif days_left <= 60:
+                        level, cls = "🟠 警告", "warning"
+                    else:
+                        level, cls = "🟡 注意", "upcoming"
 
-            for row in rows:
-                expiry_str = row["ビザ期限"]
-                try:
-                    expiry = datetime.strptime(expiry_str, "%Y-%m-%d")
-                    days_left = (expiry - today).days
-                except ValueError:
-                    continue
-
-                if days_left <= 0:
-                    level = "🔴 EXPIRED"
-                elif days_left <= 30:
-                    level = "🔴 URGENT"
-                elif days_left <= 60:
-                    level = "🟠 WARNING"
-                else:
-                    level = "🟡 UPCOMING"
-
-                alerts.append({
-                    "id": row["id"],
-                    "category": label,
-                    "employee_id": row["社員№"],
-                    "name": row["氏名"],
-                    "visa_type": row["ビザ種類"] or "—",
-                    "expiry_date": expiry_str,
-                    "days_left": days_left,
-                    "alert_level": level,
-                })
+                    alerts.append({
+                        "id": row["id"],
+                        "category": label,
+                        "table": table,
+                        "employee_id": row["社員№"],
+                        "name": row["氏名"] or "—",
+                        "visa_type": row["ビザ種類"] or "—",
+                        "expiry_date": row["ビザ期限"][:10],
+                        "days_left": days_left,
+                        "alert_level": level,
+                        "alert_class": cls,
+                    })
+        finally:
+            conn.close()
 
         alerts.sort(key=lambda x: x["days_left"])
         return alerts
 
     def get_nationality_breakdown(self) -> Dict:
-        """Return nationality counts per table."""
         conn = self._get_conn()
-        result: Dict[str, Dict[str, int]] = {}
-        for table, label in [("genzai", "派遣"), ("ukeoi", "請負"), ("staff", "スタッフ")]:
-            rows = conn.execute(
-                f'SELECT "国籍", COUNT(*) as cnt FROM {table} WHERE "国籍" IS NOT NULL GROUP BY "国籍" ORDER BY cnt DESC'
-            ).fetchall()
-            result[label] = {r["国籍"]: r["cnt"] for r in rows}
-        return result
+        try:
+            result: Dict[str, Dict[str, int]] = {}
+            for table, label in [("genzai", "派遣"), ("ukeoi", "請負"), ("staff", "スタッフ")]:
+                rows = conn.execute(
+                    f'SELECT "国籍", COUNT(*) cnt FROM {table} '
+                    f'WHERE "国籍" IS NOT NULL AND deleted_at IS NULL '
+                    f'GROUP BY "国籍" ORDER BY cnt DESC'
+                ).fetchall()
+                result[label] = {r["国籍"]: r["cnt"] for r in rows}
+            return result
+        finally:
+            conn.close()
 
     def get_hakensaki_breakdown(self, top_n: int = 15) -> List[Dict]:
-        """Return top dispatch companies."""
         conn = self._get_conn()
-        rows = conn.execute(
-            f'SELECT "派遣先", COUNT(*) as cnt FROM genzai WHERE "派遣先" IS NOT NULL GROUP BY "派遣先" ORDER BY cnt DESC LIMIT ?',
-            (top_n,),
-        ).fetchall()
-        total = conn.execute("SELECT COUNT(*) FROM genzai").fetchone()[0] or 1
-        return [
-            {"company": r["派遣先"], "count": r["cnt"], "percentage": round(r["cnt"] / total * 100, 1)}
-            for r in rows
-        ]
+        try:
+            rows = conn.execute(
+                f'SELECT "派遣先", COUNT(*) cnt FROM genzai '
+                f'WHERE "派遣先" IS NOT NULL AND deleted_at IS NULL '
+                f'GROUP BY "派遣先" ORDER BY cnt DESC LIMIT ?',
+                (top_n,),
+            ).fetchall()
+            total = conn.execute(
+                "SELECT COUNT(*) FROM genzai WHERE deleted_at IS NULL"
+            ).fetchone()[0] or 1
+            return [
+                {"company": r["派遣先"], "count": r["cnt"],
+                 "percentage": round(r["cnt"] / total * 100, 1)}
+                for r in rows
+            ]
+        finally:
+            conn.close()
 
     def has_data(self) -> bool:
-        """Return True if at least one table has rows."""
         conn = self._get_conn()
-        for table in ("genzai", "ukeoi", "staff"):
-            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            if count > 0:
-                return True
-        return False
+        try:
+            for table in self._ALL_TABLES:
+                if conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NULL"
+                ).fetchone()[0] > 0:
+                    return True
+            return False
+        finally:
+            conn.close()
 
     def db_info(self) -> Dict:
-        """Return metadata about the database."""
         conn = self._get_conn()
-        info: Dict[str, Any] = {"path": str(self.db_path), "tables": {}}
-        for table in ("genzai", "ukeoi", "staff"):
-            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            latest = conn.execute(
-                f"SELECT MAX(updated_at) FROM {table}"
-            ).fetchone()[0]
-            info["tables"][table] = {"rows": count, "last_updated": latest}
-        return info
+        try:
+            info: Dict[str, Any] = {"path": str(self.db_path), "tables": {}}
+            for table in self._ALL_TABLES:
+                live = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NULL"
+                ).fetchone()[0]
+                deleted = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NOT NULL"
+                ).fetchone()[0]
+                latest = conn.execute(
+                    f"SELECT MAX(updated_at) FROM {table}"
+                ).fetchone()[0]
+                info["tables"][table] = {
+                    "rows": live, "deleted": deleted, "last_updated": latest
+                }
+            return info
+        finally:
+            conn.close()
