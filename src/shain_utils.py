@@ -144,6 +144,22 @@ class ShainDaicho:
                 "Data not loaded. Call load() first. "
                 "Use: sd = ShainDaicho('path'); sd.load()"
             )
+
+    @staticmethod
+    def _coerce_float(value: Optional[Union[float, int, str]]) -> Optional[float]:
+        """Safely coerce numeric values to float."""
+        if value is None:
+            return None
+
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+
+        if np.isnan(parsed):
+            return None
+
+        return parsed
     
     # ==================== EMPLOYEE QUERIES ====================
     
@@ -523,26 +539,25 @@ class ShainDaicho:
                 if emp and emp['category'] == '派遣':
                     seikyu = emp['data'].get('請求単価')
                     jikyu = emp['data'].get('時給')
-            
-            if not seikyu or not jikyu:
+
+            seikyu_value = self._coerce_float(seikyu)
+            jikyu_value = self._coerce_float(jikyu)
+
+            if seikyu_value is None or jikyu_value is None:
                 return {'error': 'Missing 請求単価 or 時給 data'}
-            
-            # Convert to float
-            seikyu = float(seikyu)
-            jikyu = float(jikyu)
-            
-            company_burden = jikyu * self.COMPANY_BURDEN_RATE
-            gross_profit = seikyu - jikyu
-            net_profit = seikyu - jikyu - company_burden
-            
-            if seikyu > 0:
-                margin_rate = (gross_profit / seikyu) * 100
+
+            company_burden = jikyu_value * self.COMPANY_BURDEN_RATE
+            gross_profit = seikyu_value - jikyu_value
+            net_profit = seikyu_value - jikyu_value - company_burden
+
+            if seikyu_value > 0:
+                margin_rate = (gross_profit / seikyu_value) * 100
             else:
                 margin_rate = 0
-            
+
             return {
-                '請求単価': round(seikyu, 0),
-                '時給': round(jikyu, 0),
+                '請求単価': round(seikyu_value, 0),
+                '時給': round(jikyu_value, 0),
                 '差額利益_gross': round(gross_profit, 0),
                 '会社負担': round(company_burden, 0),
                 '差額利益_net': round(net_profit, 0),
@@ -564,9 +579,18 @@ class ShainDaicho:
         
         try:
             active = self.get_active_employees()
+            if not isinstance(active, dict):
+                logger.error("Expected a category DataFrame map for active employees")
+                return None
+
             output_path = Path(output_path)
-            
-            if format == 'excel':
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            export_format = format.lower()
+
+            if export_format == 'excel':
+                if output_path.suffix.lower() not in ['.xlsx', '.xlsm']:
+                    output_path = output_path.with_suffix('.xlsx')
+
                 with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                     for category, df in active.items():
                         df.to_excel(
@@ -576,8 +600,11 @@ class ShainDaicho:
                         )
                 logger.info(f"Exported to {output_path}")
                 return str(output_path)
-            
-            elif format == 'json':
+
+            if export_format == 'json':
+                if output_path.suffix.lower() != '.json':
+                    output_path = output_path.with_suffix('.json')
+
                 result = {
                     cat: df.to_dict('records') 
                     for cat, df in active.items()
@@ -586,14 +613,16 @@ class ShainDaicho:
                     json.dump(result, f, ensure_ascii=False, indent=2, default=str)
                 logger.info(f"Exported to {output_path}")
                 return str(output_path)
-            
-            elif format == 'csv':
+
+            if export_format == 'csv':
+                prefix = output_path.stem if output_path.suffix else output_path.name
                 for category, df in active.items():
-                    csv_path = output_path.parent / f"{output_path.stem}_{category}.csv"
+                    csv_path = output_path.parent / f"{prefix}_{category}.csv"
                     df.to_csv(csv_path, index=False, encoding='utf-8')
                 logger.info(f"Exported CSVs to {output_path.parent}")
                 return str(output_path.parent)
-            
+
+            logger.error(f"Unsupported export format: {format}")
             return None
             
         except Exception as e:
@@ -674,12 +703,32 @@ if __name__ == '__main__':
         for r in results:
             print(f"  [{r['category']}] {r['name']:20} "
                   f"(ID: {r['employee_id']}, {r['nationality']})")
-    
+
+    elif command == 'search':
+        print("❌ Missing search name argument")
+        sys.exit(1)
+
     elif command == 'export' and len(sys.argv) > 3:
-        format_type = sys.argv[3]
-        output = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        format_type = sys.argv[3].lower()
+        suffix_map = {'excel': '.xlsx', 'json': '.json', 'csv': ''}
+
+        if format_type not in suffix_map:
+            print(f"❌ Unsupported export format: {format_type}")
+            sys.exit(1)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        suffix = suffix_map[format_type]
+        output = f"export_{timestamp}{suffix}" if suffix else f"export_{timestamp}"
         result = sd.export_active_employees(output, format=format_type)
         if result:
             print(f"✅ Exported to {result}")
         else:
             print("❌ Export failed")
+
+    elif command == 'export':
+        print("❌ Missing export format argument (excel|json|csv)")
+        sys.exit(1)
+
+    else:
+        print(f"❌ Unknown command: {command}")
+        sys.exit(1)

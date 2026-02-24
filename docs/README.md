@@ -12,21 +12,29 @@ pip install -r requirements.txt
 ### 2️⃣ Opción A: Usar por Línea de Comandos
 ```bash
 # Ver resumen
-python shain_utils.py "tu_archivo.xlsm" summary
+python src/shain_utils.py "tu_archivo.xlsm" summary
 
 # Ver alertas de visa
-python shain_utils.py "tu_archivo.xlsm" visa-alerts
+python src/shain_utils.py "tu_archivo.xlsm" visa-alerts
 
 # Buscar empleado
-python shain_utils.py "tu_archivo.xlsm" search NGUYEN
+python src/shain_utils.py "tu_archivo.xlsm" search NGUYEN
 ```
 
 ### 2️⃣ Opción B: Usar Aplicación Web (Recomendado)
 ```bash
-streamlit run app_shain_daicho.py
+streamlit run src/app_shain_daicho.py
 ```
 
 Abre `http://localhost:8501` en tu navegador.
+
+### ✅ Verificación rápida recomendada
+```bash
+python -m compileall src main.py examples tests
+python -m unittest discover -s tests -p "test_*.py"
+python -m unittest tests.test_shain_daicho.TestShainDaicho.test_search_employee_case_insensitive
+python src/shain_utils.py "tu_archivo.xlsm" summary
+```
 
 ---
 

@@ -4,15 +4,18 @@ UNS 社員台帳 Management Dashboard
 Interactive Streamlit application for employee data management
 """
 
-import streamlit as st
+import hashlib
+import logging
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
-from pathlib import Path
-import json
+import streamlit as st
+
 from shain_utils import ShainDaicho
-import logging
 
 # Configure Streamlit
 st.set_page_config(
@@ -55,14 +58,15 @@ st.markdown("""
 
 
 @st.cache_resource
-def load_shain_daicho(filepath):
-    """Load ShainDaicho with caching"""
+def load_shain_daicho(filepath: str, cache_key: str):
+    """Load ShainDaicho with caching keyed by file contents."""
+    _ = cache_key
     sd = ShainDaicho(filepath)
     if sd.load():
         return sd
-    else:
-        st.error("Failed to load data file")
-        return None
+
+    logger.error(f"Failed to load data file: {filepath}")
+    return None
 
 
 def format_number(num):
@@ -76,6 +80,8 @@ def main():
     # Title
     st.title("👥 UNS 社員台帳 Manager")
     st.markdown("**Employee Registry Management System**")
+
+    sd = None
     
     # Sidebar
     with st.sidebar:
@@ -89,13 +95,19 @@ def main():
         )
         
         if uploaded_file:
-            # Save temporary file
-            temp_path = f"/tmp/{uploaded_file.name}"
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
+            # Save temporary file (cross-platform)
+            file_bytes = uploaded_file.getvalue()
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
+            safe_name = Path(uploaded_file.name).name
+            suffix = Path(safe_name).suffix or '.xlsx'
+            temp_path = Path(tempfile.gettempdir()) / f"shain_daicho_{file_hash[:16]}{suffix}"
+
+            if not temp_path.exists():
+                with open(temp_path, "wb") as f:
+                    f.write(file_bytes)
+
             # Load data
-            sd = load_shain_daicho(temp_path)
+            sd = load_shain_daicho(str(temp_path), file_hash)
             
             if sd and sd._loaded:
                 st.success("✅ Data loaded successfully!")
@@ -110,6 +122,8 @@ def main():
                     with st.expander("⚠️ Validation Notes"):
                         for error in errors:
                             st.warning(error)
+            else:
+                st.error("Failed to load data file")
         else:
             st.info("👆 Upload an Excel file to get started")
             return
@@ -494,16 +508,22 @@ def main():
             
             if category == "All":
                 active_data = sd.get_active_employees()
-                all_employees = pd.concat(active_data.values(), ignore_index=True)
+                if isinstance(active_data, dict) and active_data:
+                    all_employees = pd.concat(active_data.values(), ignore_index=True)
+                else:
+                    all_employees = pd.DataFrame()
             else:
                 cat_map = {'派遣': '派遣', '請負': '請負', 'Staff': 'Staff'}
-                all_employees = sd.get_active_employees(cat_map[category])
+                filtered = sd.get_active_employees(cat_map[category])
+                all_employees = filtered if isinstance(filtered, pd.DataFrame) else pd.DataFrame()
             
-            if len(all_employees) > 0:
-                st.dataframe(all_employees, use_container_width=True, height=500)
+            employees_df = all_employees if isinstance(all_employees, pd.DataFrame) else pd.DataFrame()
+
+            if len(employees_df) > 0:
+                st.dataframe(employees_df, use_container_width=True, height=500)
                 
                 # Download option
-                csv = all_employees.to_csv(index=False, encoding='utf-8')
+                csv = employees_df.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
                     "📥 Download CSV",
                     csv,
@@ -638,11 +658,11 @@ def main():
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         
                         if export_format == "Excel":
-                            output_path = f"/tmp/employees_export_{timestamp}.xlsx"
-                            result = sd.export_active_employees(output_path, format='excel')
+                            output_path = Path(tempfile.gettempdir()) / f"employees_export_{timestamp}.xlsx"
+                            result = sd.export_active_employees(str(output_path), format='excel')
                             
                             if result:
-                                with open(output_path, 'rb') as f:
+                                with open(result, 'rb') as f:
                                     st.download_button(
                                         "📥 Download Excel",
                                         f.read(),
@@ -661,13 +681,26 @@ def main():
                         
                         elif export_format == "CSV":
                             active = sd.get_active_employees()
-                            csv_all = pd.concat(active.values(), ignore_index=True).to_csv(index=False, encoding='utf-8')
-                            st.download_button(
-                                "📥 Download CSV",
-                                csv_all,
-                                f"employees_{timestamp}.csv",
-                                "text/csv"
-                            )
+                            if isinstance(active, dict) and active:
+                                csv_frames = [
+                                    df for df in active.values()
+                                    if isinstance(df, pd.DataFrame)
+                                ]
+                                if csv_frames:
+                                    csv_all = pd.concat(csv_frames, ignore_index=True).to_csv(
+                                        index=False,
+                                        encoding='utf-8-sig'
+                                    )
+                                    st.download_button(
+                                        "📥 Download CSV",
+                                        csv_all,
+                                        f"employees_{timestamp}.csv",
+                                        "text/csv"
+                                    )
+                                else:
+                                    st.warning("No active records available for CSV export")
+                            else:
+                                st.warning("No active records available for CSV export")
                         
                         st.success("✅ Export ready!")
                     
