@@ -58,6 +58,40 @@ class ShainDaicho:
         self._load_timestamp = None
         self._validation_errors = []
         
+    @classmethod
+    def from_dataframes(
+        cls,
+        df_genzai: pd.DataFrame,
+        df_ukeoi: pd.DataFrame,
+        df_staff: pd.DataFrame,
+        df_taisha: Optional[pd.DataFrame] = None,
+    ) -> 'ShainDaicho':
+        """
+        Construct a ShainDaicho instance from pre-loaded DataFrames.
+        Useful when data is sourced from SQLite rather than Excel.
+
+        Example::
+
+            db = ShainDatabase('data/shain_daicho.db')
+            sd = ShainDaicho.from_dataframes(
+                db.get_all('genzai'),
+                db.get_all('ukeoi'),
+                db.get_all('staff'),
+            )
+            print(sd.get_summary_stats())
+        """
+        instance = cls.__new__(cls)
+        instance.filepath = Path('<in-memory>')
+        instance.df_genzai = df_genzai.copy()
+        instance.df_ukeoi = df_ukeoi.copy()
+        instance.df_staff = df_staff.copy()
+        instance.df_taisha = df_taisha.copy() if df_taisha is not None else None
+        instance._loaded = True
+        instance._load_timestamp = datetime.now()
+        instance._validation_errors = []
+        instance._validate_data()
+        return instance
+
     def load(self) -> bool:
         """Load all sheets from the Excel file with error handling"""
         try:
