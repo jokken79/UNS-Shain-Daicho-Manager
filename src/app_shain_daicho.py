@@ -444,21 +444,30 @@ def main():
                 with col4:
                     st.metric("Median", f"¥{seikyu_stats.get('median', 0):.0f}")
                 
-                fig = px.scatter(
-                    active,
-                    x='時給',
-                    y='請求単価',
-                    color='差額利益',
-                    size='差額利益',
-                    title='Hourly Rate vs Billing Rate',
-                    labels={
-                        '時給': 'Hourly Rate (¥)',
-                        '請求単価': 'Billing Rate (¥)',
-                        '差額利益': 'Profit (¥)'
-                    },
-                    height=500
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                # Filter valid data for scatter plot (no negative profits for size)
+                scatter_data = active[
+                    (active['差額利益'].notna()) & 
+                    (active['差額利益'] > 0)
+                ].copy()
+                
+                if len(scatter_data) > 0:
+                    fig = px.scatter(
+                        scatter_data,
+                        x='時給',
+                        y='請求単価',
+                        color='差額利益',
+                        size='差額利益',
+                        title='Hourly Rate vs Billing Rate',
+                        labels={
+                            '時給': 'Hourly Rate (¥)',
+                            '請求単価': 'Billing Rate (¥)',
+                            '差額利益': 'Profit (¥)'
+                        },
+                        height=500
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No positive profit data available for scatter plot")
                 
                 # Profit analysis
                 st.subheader("Profit Analysis (差額利益)")

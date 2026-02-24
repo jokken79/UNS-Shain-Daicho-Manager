@@ -21,6 +21,7 @@ Todos los cambios notables se documentan en este archivo.
 - ✅ Export en Windows al eliminar dependencias de `/tmp`
 - ✅ `calculate_profit_margin` ahora maneja correctamente valores numericos `0`
 - ✅ Mensajes de error para argumentos faltantes o formatos no soportados en comandos CLI
+- ✅ Error de Plotly scatter plot con valores negativos en `差額利益` (size debe ser positivo)
 
 ## [2.0.0] - 2026-01-30
 
